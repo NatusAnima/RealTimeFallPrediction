@@ -161,7 +161,7 @@ while isvalid(fig)
         
         % Gate Check
         if ms_since_last_detection >= blindfold_samples
-            gate_passed = heur_score >= 0.3;
+            gate_passed = heur_score >= 1.2;
             
             if gate_passed && (isempty(pred_future) || strcmp(pred_future.State, 'finished'))
                 % Send N4SID Feature Extraction & Prediction to Background Pool
@@ -182,7 +182,7 @@ while isvalid(fig)
         if ~isempty(pred_future) && strcmp(pred_future.State, 'finished')
             try
                 p_fall = fetchOutputs(pred_future);
-                if p_fall >= 0.90
+                if p_fall >= 0.20
                     status_lbl.Text = sprintf('STATUS: FALL DETECTED! (%.2f)', p_fall);
                     status_lbl.FontColor = [0.8, 0.1, 0.1];
                     ms_since_last_detection = 0; % Activate Blindfold

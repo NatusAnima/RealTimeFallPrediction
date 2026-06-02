@@ -160,6 +160,11 @@ disp('--- 5. Model Training (OOF Late Fusion) ---');
 fprintf('Global EEG Cap calculated: %.4f\n', global_eeg_cap);
 fprintf('Total samples: %d\n', size(X_eeg, 1));
 
+% Calculate observation weights
+obs_weights = ones(size(Y_train, 1), 1);
+idx_class1 = strcmp(Y_train, '1');
+obs_weights(idx_class1) = 5.0; % 5x weight for minority 'Real Fall' class
+
 K = 5;
 cv = cvpartition(Y_train, 'KFold', K);
 p_eeg_oof = zeros(size(Y_train, 1), 1);
@@ -171,10 +176,10 @@ for k = 1:K
     test_idx = test(cv, k);
     
     template_eeg = templateTree('MaxNumSplits', sum(train_idx) - 1);
-    mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+    mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
     
     template_imu = templateTree('MaxNumSplits', sum(train_idx) - 1);
-    mdl_imu_fold = fitcensemble(X_imu(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+    mdl_imu_fold = fitcensemble(X_imu(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
     
     [~, score_eeg] = predict(mdl_eeg_fold, X_eeg(test_idx, :));
     [~, score_imu] = predict(mdl_imu_fold, X_imu(test_idx, :));
@@ -188,15 +193,15 @@ end
 
 fprintf('Training final Random Forests on full dataset...\n');
 template_eeg = templateTree('MaxNumSplits', size(X_eeg, 1) - 1);
-mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
 
 template_imu = templateTree('MaxNumSplits', size(X_imu, 1) - 1);
-mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
 
 fprintf('Training Fusion Logistic Regression...\n');
 X_fusion_train = [p_eeg_oof, p_imu_oof, X_heur];
 Y_train_cat = categorical(Y_train);
-mdl_fusion = fitglm(X_fusion_train, Y_train_cat == '1', 'Distribution', 'binomial');
+mdl_fusion = fitglm(X_fusion_train, Y_train_cat == '1', 'Distribution', 'binomial', 'Weights', obs_weights);
 
 disp('Training Complete. Saving models to trained_model.mat...');
 save('trained_model.mat', 'mdl_eeg', 'mdl_imu', 'mdl_fusion', 'global_eeg_cap', 'b', 'a');
