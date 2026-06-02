@@ -93,7 +93,7 @@ function execute_evaluation(fig)
     drawnow;
     
     try
-        load('trained_model.mat', 'rf_model', 'acc_threshold', 'global_eeg_cap', 'b', 'a');
+        load('trained_model.mat', 'mdl_eeg', 'mdl_imu', 'mdl_fusion', 'global_eeg_cap', 'b', 'a');
     catch
         results_ta.Value = {'ERROR: trained_model.mat not found.'};
         return;
@@ -119,7 +119,7 @@ function execute_evaluation(fig)
         wb.Value = i / length(target_subjs);
         wb.Message = sprintf('Evaluating Subject %d (%d/%d)', subj, i, length(target_subjs));
         
-        [sub_TP, sub_TN, sub_FP, sub_FN, sub_FP0, sub_FP2, sub_tot] = evaluate_subject(subj, ud.raw_data_dir, b, a, global_eeg_cap, acc_threshold, rf_model);
+        [sub_TP, sub_TN, sub_FP, sub_FN, sub_FP0, sub_FP2, sub_tot] = evaluate_subject(subj, ud.raw_data_dir, b, a, global_eeg_cap, mdl_eeg, mdl_imu, mdl_fusion);
         
         TP = TP + sub_TP; TN = TN + sub_TN;
         FP = FP + sub_FP; FN = FN + sub_FN;
@@ -178,18 +178,20 @@ function execute_training(fig)
     
     num_t = length(target_subjs);
     subj_X = cell(num_t, 1);
+    subj_X_imu = cell(num_t, 1);
+    subj_X_heur = cell(num_t, 1);
     subj_Y = cell(num_t, 1);
-    subj_acc_max = cell(num_t, 1);
     subj_eeg_cap = zeros(num_t, 1);
     
     wb = uiprogressdlg(fig, 'Title', 'Training Model', 'Message', 'Extracting features (Parallel)...');
     
     parfor i = 1:num_t
         subj = target_subjs(i);
-        [local_X, local_Y, local_acc_max, local_cap] = extract_subject_features(subj, ud.raw_data_dir, b, a);
+        [local_X, local_X_imu, local_X_heur, local_Y, local_cap] = extract_subject_features(subj, ud.raw_data_dir, b, a);
         subj_X{i} = local_X;
+        subj_X_imu{i} = local_X_imu;
+        subj_X_heur{i} = local_X_heur;
         subj_Y{i} = local_Y;
-        subj_acc_max{i} = local_acc_max;
         subj_eeg_cap(i) = local_cap;
     end
     
@@ -197,19 +199,52 @@ function execute_training(fig)
     wb.Value = 0.8;
     drawnow;
     
-    X_train = cell2mat(subj_X);
+    X_eeg = cell2mat(subj_X);
+    X_imu = cell2mat(subj_X_imu);
+    X_heur = cell2mat(subj_X_heur);
     Y_train = vertcat(subj_Y{:});
-    acc_max_unexpected = cell2mat(subj_acc_max');
     global_eeg_cap = max(subj_eeg_cap);
     
-    if ~isempty(acc_max_unexpected)
-        acc_threshold = min(acc_max_unexpected);
-    else
-        acc_threshold = 1.0;
+    K = 5;
+    if size(Y_train, 1) < 5
+        K = size(Y_train, 1);
     end
     
-    template = templateTree('MaxNumSplits', size(X_train, 1) - 1);
-    rf_model = fitcensemble(X_train, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template, 'ClassNames', {'0', '1'});
+    p_eeg_oof = zeros(size(Y_train, 1), 1);
+    p_imu_oof = zeros(size(Y_train, 1), 1);
+    
+    if K > 1
+        cv = cvpartition(Y_train, 'KFold', K);
+        for k = 1:K
+            train_idx = training(cv, k);
+            test_idx = test(cv, k);
+            
+            template_eeg = templateTree('MaxNumSplits', sum(train_idx) - 1);
+            mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+            
+            template_imu = templateTree('MaxNumSplits', sum(train_idx) - 1);
+            mdl_imu_fold = fitcensemble(X_imu(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+            
+            [~, score_eeg] = predict(mdl_eeg_fold, X_eeg(test_idx, :));
+            [~, score_imu] = predict(mdl_imu_fold, X_imu(test_idx, :));
+            
+            idx_1_eeg = find(strcmp(mdl_eeg_fold.ClassNames, '1'));
+            idx_1_imu = find(strcmp(mdl_imu_fold.ClassNames, '1'));
+            
+            p_eeg_oof(test_idx) = score_eeg(:, idx_1_eeg);
+            p_imu_oof(test_idx) = score_imu(:, idx_1_imu);
+        end
+    end
+    
+    template_eeg = templateTree('MaxNumSplits', size(X_eeg, 1) - 1);
+    mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+    
+    template_imu = templateTree('MaxNumSplits', size(X_imu, 1) - 1);
+    mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+    
+    X_fusion_train = [p_eeg_oof, p_imu_oof, X_heur];
+    Y_train_cat = categorical(Y_train);
+    mdl_fusion = fitglm(X_fusion_train, Y_train_cat == '1', 'Distribution', 'binomial');
     
     % Generate file name based on selected subjects
     if length(target_subjs) > 5
@@ -218,7 +253,7 @@ function execute_training(fig)
         filename = ['trained_model_subj_', strjoin(arrayfun(@num2str, target_subjs, 'UniformOutput', false), '_'), '.mat'];
     end
     
-    save(filename, 'rf_model', 'acc_threshold', 'global_eeg_cap', 'b', 'a');
+    save(filename, 'mdl_eeg', 'mdl_imu', 'mdl_fusion', 'global_eeg_cap', 'b', 'a');
     close(wb);
     
     results_ta.Value = {
@@ -258,12 +293,13 @@ function execute_loso(fig)
     
     % Pre-extract all features to save massive time
     subj_X = cell(num_subjs, 1);
+    subj_X_imu = cell(num_subjs, 1);
+    subj_X_heur = cell(num_subjs, 1);
     subj_Y = cell(num_subjs, 1);
-    subj_acc_max = cell(num_subjs, 1);
     subj_eeg_cap = zeros(num_subjs, 1);
     
     parfor i = 1:num_subjs
-        [subj_X{i}, subj_Y{i}, subj_acc_max{i}, subj_eeg_cap(i)] = extract_subject_features(all_subjs(i), ud.raw_data_dir, b, a);
+        [subj_X{i}, subj_X_imu{i}, subj_X_heur{i}, subj_Y{i}, subj_eeg_cap(i)] = extract_subject_features(all_subjs(i), ud.raw_data_dir, b, a);
     end
     
     global_eeg_cap = max(subj_eeg_cap);
@@ -279,21 +315,51 @@ function execute_loso(fig)
         train_mask = true(num_subjs, 1);
         train_mask(test_idx) = false;
         
-        X_train = cell2mat(subj_X(train_mask));
+        X_eeg = cell2mat(subj_X(train_mask));
+        X_imu = cell2mat(subj_X_imu(train_mask));
+        X_heur = cell2mat(subj_X_heur(train_mask));
         Y_train = vertcat(subj_Y{train_mask});
-        acc_max_train = cell2mat(subj_acc_max(train_mask)');
         
-        if ~isempty(acc_max_train)
-            acc_threshold = min(acc_max_train);
-        else
-            acc_threshold = 1.0;
+        K = 5;
+        if size(Y_train, 1) < 5; K = size(Y_train, 1); end
+        p_eeg_oof = zeros(size(Y_train, 1), 1);
+        p_imu_oof = zeros(size(Y_train, 1), 1);
+        
+        if K > 1
+            cv = cvpartition(Y_train, 'KFold', K);
+            for k = 1:K
+                t_idx = training(cv, k);
+                ts_idx = test(cv, k);
+                
+                template_eeg = templateTree('MaxNumSplits', sum(t_idx) - 1);
+                mdl_eeg_fold = fitcensemble(X_eeg(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+                
+                template_imu = templateTree('MaxNumSplits', sum(t_idx) - 1);
+                mdl_imu_fold = fitcensemble(X_imu(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+                
+                [~, score_eeg] = predict(mdl_eeg_fold, X_eeg(ts_idx, :));
+                [~, score_imu] = predict(mdl_imu_fold, X_imu(ts_idx, :));
+                
+                idx_1_eeg = find(strcmp(mdl_eeg_fold.ClassNames, '1'));
+                idx_1_imu = find(strcmp(mdl_imu_fold.ClassNames, '1'));
+                
+                p_eeg_oof(ts_idx) = score_eeg(:, idx_1_eeg);
+                p_imu_oof(ts_idx) = score_imu(:, idx_1_imu);
+            end
         end
         
-        template = templateTree('MaxNumSplits', size(X_train, 1) - 1);
-        rf_model = fitcensemble(X_train, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template, 'ClassNames', {'0', '1'});
+        template_eeg = templateTree('MaxNumSplits', size(X_eeg, 1) - 1);
+        mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+        
+        template_imu = templateTree('MaxNumSplits', size(X_imu, 1) - 1);
+        mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+        
+        X_fusion_train = [p_eeg_oof, p_imu_oof, X_heur];
+        Y_train_cat = categorical(Y_train);
+        mdl_fusion = fitglm(X_fusion_train, Y_train_cat == '1', 'Distribution', 'binomial');
         
         % Evaluate on the held out subject
-        [sub_TP, sub_TN, sub_FP, sub_FN, sub_FP0, sub_FP2, sub_tot] = evaluate_subject(all_subjs(test_idx), ud.raw_data_dir, b, a, global_eeg_cap, acc_threshold, rf_model);
+        [sub_TP, sub_TN, sub_FP, sub_FN, sub_FP0, sub_FP2, sub_tot] = evaluate_subject(all_subjs(test_idx), ud.raw_data_dir, b, a, global_eeg_cap, mdl_eeg, mdl_imu, mdl_fusion);
         
         TP = TP + sub_TP; TN = TN + sub_TN;
         FP = FP + sub_FP; FN = FN + sub_FN;
@@ -333,7 +399,7 @@ function execute_loso(fig)
 end
 
 % --- Helper Functions ---
-function [TP, TN, FP, FN, FP0, FP2, tot] = evaluate_subject(subj, raw_data_dir, b, a, global_cap, acc_thresh, rf_model)
+function [TP, TN, FP, FN, FP0, FP2, tot] = evaluate_subject(subj, raw_data_dir, b, a, global_cap, mdl_eeg, mdl_imu, mdl_fusion)
     TP = 0; TN = 0; FP = 0; FN = 0; FP0 = 0; FP2 = 0; tot = 0;
     
     load(fullfile(raw_data_dir, 'All34_table.mat'), 'event_table');
@@ -403,13 +469,21 @@ function [TP, TN, FP, FN, FP0, FP2, tot] = evaluate_subject(subj, raw_data_dir, 
         if end_idx <= length(eeg_sig_filtered)
             acc_epoch = acc_sig(:, start_idx:end_idx);
             acc_norm = normalized_acc(acc_epoch);
-            [gate_passed, ~] = evaluate_acc_gate(acc_norm, acc_thresh);
+            heur_score = calculate_imu_heuristic(acc_norm);
+            gate_passed = heur_score >= 0.3;
             
             if gate_passed
                 epoch = eeg_sig_filtered(start_idx:end_idx);
                 epoch_bn = (epoch - mean(epoch(1:40))) ./ global_cap;
-                feat = extract_features(epoch_bn, sys_order);
-                pred_label = predict_fall(feat, rf_model);
+                feat_eeg = extract_features(epoch_bn, sys_order);
+                feat_imu = extract_imu_features(acc_epoch);
+                
+                p_fall = predict_fall(feat_eeg, feat_imu, heur_score, mdl_eeg, mdl_imu, mdl_fusion);
+                if p_fall >= 0.90
+                    pred_label = '1';
+                else
+                    pred_label = '0';
+                end
             else
                 pred_label = '0';
             end
@@ -435,8 +509,8 @@ function [TP, TN, FP, FN, FP0, FP2, tot] = evaluate_subject(subj, raw_data_dir, 
     tot = sum(local_total);
 end
 
-function [X, Y, acc_max, local_cap] = extract_subject_features(subj, raw_data_dir, b, a)
-    X = []; Y = {}; acc_max = []; local_cap = 1.0;
+function [X_eeg, X_imu, X_heur, Y, local_cap] = extract_subject_features(subj, raw_data_dir, b, a)
+    X_eeg = []; X_imu = []; X_heur = []; Y = {}; local_cap = 1.0;
     
     load(fullfile(raw_data_dir, 'All34_table.mat'), 'event_table');
     load(fullfile(raw_data_dir, 'Label_Table.mat'), 'label_table');
@@ -506,13 +580,17 @@ function [X, Y, acc_max, local_cap] = extract_subject_features(subj, raw_data_di
             acc_epoch = acc_sig(:, start_idx:end_idx);
             acc_norm = normalized_acc(acc_epoch);
             
+            imu_feat = extract_imu_features(acc_epoch);
+            heur_score = calculate_imu_heuristic(acc_norm);
+            
             if orig_label == 1
                 Y{end+1, 1} = '1';
-                acc_max(end+1) = max(acc_norm);
             else
                 Y{end+1, 1} = '0';
             end
-            X = [X; feat];
+            X_eeg = [X_eeg; feat];
+            X_imu = [X_imu; imu_feat];
+            X_heur = [X_heur; heur_score];
         end
     end
 end

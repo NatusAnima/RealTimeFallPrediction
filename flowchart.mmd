@@ -2,11 +2,18 @@ graph TD
     A[Sensors / DAQ] -->|Raw EEG, Raw ACC| B[Data Receiver Module]
     B -->|256ms EEG Epoch, 256ms ACC Epoch| C[Preprocessor Module]
     
-    C -->|Filtered/Normalized EEG| E[Feature Extractor Module]
-    C -->|Normalized 3D ACC| D[Accelerometer Gate Module]
+    C -->|Filtered/Normalized EEG| E[EEG N4SID Extractor]
+    C -->|Normalized 3D ACC| D[IMU Heuristic CPU Gate]
     
-    D -->|Gate Passed = True| E
-    D -->|Gate Passed = False| G[Drop / Ignore Event]
+    D -->|Heuristic < 0.3| G[Drop / Ignore Event]
+    D -->|Heuristic >= 0.3| E
+    D -->|Heuristic >= 0.3| I[IMU Deterministic Extractor]
     
-    E -->|N4SID Features: A, C, K| F[Prediction Module]
-    F -->|Prediction: '0' or '1'| H[State Manager / GUI]
+    E -->|N4SID Features| F[EEG Random Forest]
+    I -->|Deterministic Features| J[IMU Random Forest]
+    
+    F -->|p_eeg| K[Late Fusion Logistic Regression]
+    J -->|p_imu| K
+    D -->|Heuristic Score| K
+    
+    K -->|p_fall >= 0.90| H[State Manager / GUI]

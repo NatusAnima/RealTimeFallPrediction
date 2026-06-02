@@ -37,8 +37,9 @@ disp('--- 3. Preprocessing Full Data (Parallel) ---');
 
 % Pre-allocate cell arrays for parfor collection
 subj_X = cell(num_subjects, 1);
+subj_X_imu = cell(num_subjects, 1);
+subj_X_heur = cell(num_subjects, 1);
 subj_Y = cell(num_subjects, 1);
-subj_acc_max = cell(num_subjects, 1);
 subj_eeg_cap = zeros(num_subjects, 1);
 
 parfor i = 1:num_subjects
@@ -108,8 +109,9 @@ parfor i = 1:num_subjects
     all_original_labels = [subj_labels, 2 * ones(1, length(class2_onsets))];
     
     local_X = [];
+    local_X_imu = [];
+    local_X_heur = [];
     local_Y = {};
-    local_acc_max = [];
     
     for e_idx = 1:length(all_onsets)
         onset = all_onsets(e_idx);
@@ -124,45 +126,78 @@ parfor i = 1:num_subjects
             
             acc_epoch = acc_sig(:, start_idx:end_idx);
             acc_norm = normalized_acc(acc_epoch);
-            max_acc_val = max(acc_norm);
+            
+            imu_feat = extract_imu_features(acc_epoch);
+            heur_score = calculate_imu_heuristic(acc_norm);
             
             if orig_label == 1
                 local_Y{end+1, 1} = '1';
-                local_acc_max(end+1) = max_acc_val;
             else
                 local_Y{end+1, 1} = '0';
             end
             local_X = [local_X; feat];
+            local_X_imu = [local_X_imu; imu_feat];
+            local_X_heur = [local_X_heur; heur_score];
         end
     end
     
     % Store in cell arrays for parfor transparency
     subj_X{i} = local_X;
+    subj_X_imu{i} = local_X_imu;
+    subj_X_heur{i} = local_X_heur;
     subj_Y{i} = local_Y;
-    subj_acc_max{i} = local_acc_max;
     subj_eeg_cap(i) = local_eeg_cap;
 end
 
 disp('--- 4. Aggregating Parallel Results ---');
-X_train = cell2mat(subj_X);
+X_eeg = cell2mat(subj_X);
+X_imu = cell2mat(subj_X_imu);
+X_heur = cell2mat(subj_X_heur);
 Y_train = vertcat(subj_Y{:});
-acc_max_unexpected = cell2mat(subj_acc_max');
 global_eeg_cap = max(subj_eeg_cap);
 
-disp('--- 5. Model Training ---');
-if ~isempty(acc_max_unexpected)
-    acc_threshold = min(acc_max_unexpected);
-else
-    acc_threshold = 1.0; % Fallback
+disp('--- 5. Model Training (OOF Late Fusion) ---');
+fprintf('Global EEG Cap calculated: %.4f\n', global_eeg_cap);
+fprintf('Total samples: %d\n', size(X_eeg, 1));
+
+K = 5;
+cv = cvpartition(Y_train, 'KFold', K);
+p_eeg_oof = zeros(size(Y_train, 1), 1);
+p_imu_oof = zeros(size(Y_train, 1), 1);
+
+fprintf('Generating OOF Predictions using %d-Fold CV...\n', K);
+for k = 1:K
+    train_idx = training(cv, k);
+    test_idx = test(cv, k);
+    
+    template_eeg = templateTree('MaxNumSplits', sum(train_idx) - 1);
+    mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
+    
+    template_imu = templateTree('MaxNumSplits', sum(train_idx) - 1);
+    mdl_imu_fold = fitcensemble(X_imu(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
+    
+    [~, score_eeg] = predict(mdl_eeg_fold, X_eeg(test_idx, :));
+    [~, score_imu] = predict(mdl_imu_fold, X_imu(test_idx, :));
+    
+    idx_1_eeg = find(strcmp(mdl_eeg_fold.ClassNames, '1'));
+    idx_1_imu = find(strcmp(mdl_imu_fold.ClassNames, '1'));
+    
+    p_eeg_oof(test_idx) = score_eeg(:, idx_1_eeg);
+    p_imu_oof(test_idx) = score_imu(:, idx_1_imu);
 end
 
-fprintf('ACC Gate Threshold calculated: %.4f\n', acc_threshold);
-fprintf('Global EEG Cap calculated: %.4f\n', global_eeg_cap);
-fprintf('Training fitcensemble on %d total samples...\n', size(X_train, 1));
+fprintf('Training final Random Forests on full dataset...\n');
+template_eeg = templateTree('MaxNumSplits', size(X_eeg, 1) - 1);
+mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'});
 
-template = templateTree('MaxNumSplits', size(X_train, 1) - 1);
-rf_model = fitcensemble(X_train, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template, 'ClassNames', {'0', '1'});
+template_imu = templateTree('MaxNumSplits', size(X_imu, 1) - 1);
+mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'});
 
-disp('Training Complete. Saving model to trained_model.mat...');
-save('trained_model.mat', 'rf_model', 'acc_threshold', 'global_eeg_cap', 'b', 'a');
+fprintf('Training Fusion Logistic Regression...\n');
+X_fusion_train = [p_eeg_oof, p_imu_oof, X_heur];
+Y_train_cat = categorical(Y_train);
+mdl_fusion = fitglm(X_fusion_train, Y_train_cat == '1', 'Distribution', 'binomial');
+
+disp('Training Complete. Saving models to trained_model.mat...');
+save('trained_model.mat', 'mdl_eeg', 'mdl_imu', 'mdl_fusion', 'global_eeg_cap', 'b', 'a');
 disp('Model saved successfully!');
