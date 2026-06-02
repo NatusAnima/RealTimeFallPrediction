@@ -9,10 +9,10 @@ To ensure high accuracy and minimal false alarms in a real-world wearable contex
 ## Core Architecture & Strategy
 
 - **Dual-Modality Sensing**: Combines a 3-axis Accelerometer (ACC) and a single-channel EEG (Channel R6).
-- **Heuristic CPU Gate**: Acts as a low-power first pass calculating free-fall deviation. If the dynamic heuristic score is below a threshold (meaning gravity is normal), the system safely ignores the event and saves CPU cycles.
-- **Independent Feature Extraction**: For events passing the CPU gate, the system extracts **N4SID state-space matrices** from the EEG and **deterministic physical variables** (SMA, Variance, Min Mag, Peak Jerk) from the ACC.
-- **Late Fusion Classification**: A logistic regression model (`mdl_fusion`) takes the independent probability scores (`p_eeg` and `p_imu`) from two distinct Random Forests, alongside the `heuristic_score`, to predict the final probabilistic confidence of a fall (`p_fall >= 0.90`).
-- **Out-of-Fold Training**: Prevents data leakage by utilizing 5-Fold Cross-Validation to generate unmemorized probabilities for the fusion layer.
+- **Heuristic CPU Gate**: Acts as a low-power first pass calculating the absolute maximum acceleration spike on a horizontal slider. If the dynamic heuristic score is below a 1.2g threshold (meaning gravity is normal), the system safely ignores the event and saves CPU cycles.
+- **Independent Feature Extraction**: For events passing the CPU gate, the system extracts **N4SID state-space matrices** from the EEG and **deterministic spatial variables** (Max Amplitude, Peak Jerk) from the ACC.
+- **Late Fusion Classification**: A logistic regression model (`mdl_fusion`) takes the independent probability scores (`p_eeg` and `p_imu`) from two distinct Random Forests, alongside the `heuristic_score`, to predict the final probabilistic confidence of a fall (`p_fall >= 0.20`).
+- **Out-of-Fold Training & Class Weighting**: Prevents data leakage by utilizing 5-Fold Cross-Validation to generate unmemorized probabilities for the fusion layer. The minority "Real Fall" class is heavily weighted (5x) during training to combat class imbalance.
 - **Multithreading**: The architecture heavily utilizes MATLAB's Parallel Computing Toolbox. Model training is parallelized across subjects (`parfor`), and real-time live predictions are offloaded to background workers (`parfeval`) to ensure UI and DAQ responsiveness.
 
 ## System Architecture
@@ -44,10 +44,18 @@ Generates the three core machine learning models required by the live system.
 A user-friendly GUI specifically for evaluating the trained model against historical `.edf` data without writing code.
 
 - Features a dropdown to select individual subjects or "All Subjects".
-- Displays a progress bar during evaluation.
-- Outputs detailed metrics directly to a built-in text console: Sensitivity, Specificity, Balanced Accuracy, and precise False Positive breakdowns (Class 0 expected misclassification vs. Class 2 silence misclassification).
+- Includes a **Continuous Live Evaluation Mode** to rigorously score True/False Positives continuously via a sliding window (±1.5s tolerance).
+- Outputs detailed metrics directly to a built-in text console: Sensitivity, Specificity, F1 Score, Balanced Accuracy, and precise False Positive breakdowns.
 
-### 4. `master_pipeline.m` (Legacy LOSO Validator)
+### 4. `run_offline_simulation_gui.m` (Interactive Simulation)
+
+A GUI to visually simulate the real-time system using recorded EDF offline data.
+
+- Features an **Interactive Seek Bar** and an **Event Log** to quickly scrub to pre-labeled Fall/Non-Fall timestamps.
+- Simulates the exact plotting and 1.2g CPU gating of the live system.
+- Includes adjustable slow-motion playback speeds (`0.5x`, `0.25x`) or `Max Speed` to process datasets instantly.
+
+### 5. `master_pipeline.m` (Legacy LOSO Validator)
 
 The original monolithic script used to rigorously validate the algorithm architecture using a strict Leave-One-Subject-Out (LOSO) cross-validation method. It ensures the model can generalize to completely unseen users without data leakage.
 
@@ -56,9 +64,9 @@ The original monolithic script used to rigorously validate the algorithm archite
 The signal processing logic has been broken down into strict Input/Output modules to support decoupled testing and live execution:
 
 - **`preprocess_signal.m`**: Filters EEG and calculates normalized 3D ACC magnitude.
-- **`calculate_imu_heuristic.m`**: Computes continuous deviation from baseline gravity to act as a lightweight gate.
-- **`extract_features.m`**: Wraps MATLAB's `n4sid` to extraeadct multi-dimensional state-space feature vectors.
-- **`extract_imu_features.m`**: Computes deterministic kinematic variables (SMA, Variance, Min Magnitude, Peak Jerk).
+- **`calculate_imu_heuristic.m`**: Computes the absolute maximum acceleration spike to act as a 1.2g horizontal impact gate.
+- **`extract_features.m`**: Wraps MATLAB's `n4sid` to extract multi-dimensional state-space feature vectors.
+- **`extract_imu_features.m`**: Computes deterministic spatial kinematics (Max Amplitude, Peak Jerk).
 - **`predict_fall.m` / `predict_fall_wrapper.m`**: Standard and background-worker wrappers for executing the full 3-model fusion prediction.
 - **`normalized_acc.m`**: Applies Savitzky-Golay filtering to smooth raw accelerometer channels.
 
@@ -66,5 +74,5 @@ The signal processing logic has been broken down into strict Input/Output module
 
 1. **Setup Workspace**: Ensure your MATLAB workspace is set to the project root directory containing the `Raw_Data/` folder (with `All34_table.mat`, `Label_Table.mat`, and `Filtered/*.edf`).
 2. **Train the Model**: Execute `train_model.m` to generate `trained_model.mat`.
-3. **Explore Metrics**: Run `run_offline_metrics_gui.m` to explore how the model performs on the historical dataset via the interactive UI.
-4. **Go Live**: Start the Python Brainflow DAQ (broadcasting to `127.0.0.1:5005`), then execute `run_live_system.m` to monitor live streams and predictions.
+3. **Explore Metrics**: Run `run_offline_metrics_gui.m` to score performance, or `run_offline_simulation_gui.m` to visually simulate the pipeline in slow-motion.
+4. **Go Live**: Start the Python Brainflow DAQ, then execute `run_live_system.m` to monitor live streams and predictions.
