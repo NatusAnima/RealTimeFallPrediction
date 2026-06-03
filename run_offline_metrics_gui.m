@@ -195,33 +195,46 @@ function execute_training(fig)
     [b, a] = butter(2, [2.5, 30] / (fs/2), 'bandpass');
     
     num_t = length(target_subjs);
+    subj_eeg_cap = ones(num_t, 1);
+    
+    wb = uiprogressdlg(fig, 'Title', 'Training Model', 'Message', 'Pass 1: Calculating Global Cap...');
+    
+    parfor i = 1:num_t
+        subj = target_subjs(i);
+        subj_eeg_cap(i) = calculate_subject_cap(subj, ud.raw_data_dir, b, a);
+    end
+    
+    global_eeg_cap = max(subj_eeg_cap);
+    
+    wb.Message = 'Pass 2: Extracting features...';
+    wb.Value = 0.3;
+    drawnow;
+    
     subj_X = cell(num_t, 1);
     subj_X_imu = cell(num_t, 1);
     subj_X_heur = cell(num_t, 1);
     subj_Y = cell(num_t, 1);
-    subj_eeg_cap = zeros(num_t, 1);
-    
-    wb = uiprogressdlg(fig, 'Title', 'Training Model', 'Message', 'Extracting features (Parallel)...');
+    subj_idx_cell = cell(num_t, 1);
     
     parfor i = 1:num_t
         subj = target_subjs(i);
-        [local_X, local_X_imu, local_X_heur, local_Y, local_cap] = extract_subject_features(subj, ud.raw_data_dir, b, a);
+        [local_X, local_X_imu, local_X_heur, local_Y] = extract_subject_features(subj, ud.raw_data_dir, b, a, global_eeg_cap);
         subj_X{i} = local_X;
         subj_X_imu{i} = local_X_imu;
         subj_X_heur{i} = local_X_heur;
         subj_Y{i} = local_Y;
-        subj_eeg_cap(i) = local_cap;
+        subj_idx_cell{i} = i * ones(size(local_Y, 1), 1);
     end
     
     wb.Message = 'Aggregating and Training RF...';
-    wb.Value = 0.8;
+    wb.Value = 0.7;
     drawnow;
     
     X_eeg = cell2mat(subj_X);
     X_imu = cell2mat(subj_X_imu);
     X_heur = cell2mat(subj_X_heur);
     Y_train = vertcat(subj_Y{:});
-    global_eeg_cap = max(subj_eeg_cap);
+    all_subj_idx = cell2mat(subj_idx_cell);
     
     % Calculate observation weights
     obs_weights = ones(size(Y_train, 1), 1);
@@ -229,18 +242,19 @@ function execute_training(fig)
     obs_weights(idx_class1) = 5.0; % 5x weight for minority 'Real Fall' class
     
     K = 5;
-    if size(Y_train, 1) < 5
-        K = size(Y_train, 1);
-    end
+    if num_t < K, K = num_t; end
     
     p_eeg_oof = zeros(size(Y_train, 1), 1);
     p_imu_oof = zeros(size(Y_train, 1), 1);
     
     if K > 1
-        cv = cvpartition(Y_train, 'KFold', K);
+        cv_subj = cvpartition(num_t, 'KFold', K);
         for k = 1:K
-            train_idx = training(cv, k);
-            test_idx = test(cv, k);
+            test_subjs_mask = test(cv_subj, k);
+            train_subjs_mask = training(cv_subj, k);
+            
+            test_idx = ismember(all_subj_idx, find(test_subjs_mask));
+            train_idx = ismember(all_subj_idx, find(train_subjs_mask));
             
             template_eeg = templateTree('MaxNumSplits', sum(train_idx) - 1);
             mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
@@ -284,9 +298,8 @@ function execute_training(fig)
         '          TRAINING COMPLETE              '
         '========================================='
         sprintf(' Trained on %d Subjects.', length(target_subjs))
-        sprintf(' Total Samples   : %d', size(X_train, 1))
+        sprintf(' Total Samples   : %d', size(X_eeg, 1))
         sprintf(' Global EEG Cap  : %.4f', global_eeg_cap)
-        sprintf(' ACC Threshold   : %.4f', acc_threshold)
         '-----------------------------------------'
         sprintf(' Model successfully saved as:')
         sprintf(' %s', filename)
@@ -312,20 +325,27 @@ function execute_loso(fig)
     [b, a] = butter(2, [2.5, 30] / (fs/2), 'bandpass');
     num_subjs = length(all_subjs);
     
-    wb = uiprogressdlg(fig, 'Title', 'LOSO Cross-Validation', 'Message', 'Extracting all features (Parallel)...');
+    wb = uiprogressdlg(fig, 'Title', 'LOSO Cross-Validation', 'Message', 'Pass 1: Calculating Global Cap...');
     
-    % Pre-extract all features to save massive time
+    subj_eeg_cap = ones(num_subjs, 1);
+    parfor i = 1:num_subjs
+        subj_eeg_cap(i) = calculate_subject_cap(all_subjs(i), ud.raw_data_dir, b, a);
+    end
+    global_eeg_cap = max(subj_eeg_cap);
+    
+    wb.Message = 'Pass 2: Extracting all features (Parallel)...';
+    wb.Value = 0.2;
+    
     subj_X = cell(num_subjs, 1);
     subj_X_imu = cell(num_subjs, 1);
     subj_X_heur = cell(num_subjs, 1);
     subj_Y = cell(num_subjs, 1);
-    subj_eeg_cap = zeros(num_subjs, 1);
+    subj_idx_cell = cell(num_subjs, 1);
     
     parfor i = 1:num_subjs
-        [subj_X{i}, subj_X_imu{i}, subj_X_heur{i}, subj_Y{i}, subj_eeg_cap(i)] = extract_subject_features(all_subjs(i), ud.raw_data_dir, b, a);
+        [subj_X{i}, subj_X_imu{i}, subj_X_heur{i}, subj_Y{i}] = extract_subject_features(all_subjs(i), ud.raw_data_dir, b, a, global_eeg_cap);
+        subj_idx_cell{i} = i * ones(size(subj_Y{i}, 1), 1);
     end
-    
-    global_eeg_cap = max(subj_eeg_cap);
     
     TP = 0; TN = 0; FP = 0; FN = 0;
     FP_Class0 = 0; FP_Class2 = 0;
@@ -334,7 +354,7 @@ function execute_loso(fig)
     all_true_labels = [];
     
     for test_idx = 1:num_subjs
-        wb.Value = test_idx / num_subjs;
+        wb.Value = min(1.0, 0.2 + (0.8 * test_idx / num_subjs));
         wb.Message = sprintf('LOSO Iteration %d/%d (Held-out: Subj %d)', test_idx, num_subjs, all_subjs(test_idx));
         
         train_mask = true(num_subjs, 1);
@@ -344,21 +364,27 @@ function execute_loso(fig)
         X_imu = cell2mat(subj_X_imu(train_mask));
         X_heur = cell2mat(subj_X_heur(train_mask));
         Y_train = vertcat(subj_Y{train_mask});
+        all_subj_idx = cell2mat(subj_idx_cell(train_mask));
         
         obs_weights = ones(size(Y_train, 1), 1);
         idx_class1 = strcmp(Y_train, '1');
         obs_weights(idx_class1) = 5.0; % 5x weight for minority 'Real Fall' class
         
+        num_t = sum(train_mask);
         K = 5;
-        if size(Y_train, 1) < 5; K = size(Y_train, 1); end
+        if num_t < K; K = num_t; end
+        
         p_eeg_oof = zeros(size(Y_train, 1), 1);
         p_imu_oof = zeros(size(Y_train, 1), 1);
         
         if K > 1
-            cv = cvpartition(Y_train, 'KFold', K);
+            cv_subj = cvpartition(num_t, 'KFold', K);
             for k = 1:K
-                t_idx = training(cv, k);
-                ts_idx = test(cv, k);
+                test_subjs_mask = test(cv_subj, k);
+                train_subjs_mask = training(cv_subj, k);
+                
+                t_idx = ismember(all_subj_idx, find(train_subjs_mask));
+                ts_idx = ismember(all_subj_idx, find(test_subjs_mask));
                 
                 template_eeg = templateTree('MaxNumSplits', sum(t_idx) - 1);
                 mdl_eeg_fold = fitcensemble(X_eeg(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(t_idx));
@@ -516,7 +542,7 @@ function [TP, TN, FP, FN, FP0, FP2, tot, p_falls, true_labels] = evaluate_subjec
             acc_epoch = acc_sig(:, start_idx:end_idx);
             acc_norm = normalized_acc(acc_epoch);
             heur_score = calculate_imu_heuristic(acc_norm);
-            gate_passed = heur_score >= 1.2;
+            gate_passed = true; % heur_score >= 1.2; (Gate Disabled for offline evaluation)
             
             if gate_passed
                 epoch = eeg_sig_filtered(start_idx:end_idx);
@@ -562,8 +588,8 @@ function [TP, TN, FP, FN, FP0, FP2, tot, p_falls, true_labels] = evaluate_subjec
     true_labels = local_labels(local_total > 0);
 end
 
-function [X_eeg, X_imu, X_heur, Y, local_cap] = extract_subject_features(subj, raw_data_dir, b, a)
-    X_eeg = []; X_imu = []; X_heur = []; Y = {}; local_cap = 1.0;
+function [X_eeg, X_imu, X_heur, Y] = extract_subject_features(subj, raw_data_dir, b, a, global_cap)
+    X_eeg = []; X_imu = []; X_heur = []; Y = {};
     
     load(fullfile(raw_data_dir, 'All34_table.mat'), 'event_table');
     load(fullfile(raw_data_dir, 'Label_Table.mat'), 'label_table');
@@ -596,13 +622,6 @@ function [X_eeg, X_imu, X_heur, Y, local_cap] = extract_subject_features(subj, r
     end
     
     eeg_sig_filtered = filtfilt(b, a, eeg_sig);
-    if ~isempty(subj_events)
-        timing_1 = subj_events(1);
-        if timing_1 + 1000 <= length(eeg_sig_filtered)
-            per_1 = eeg_sig_filtered(timing_1 + 1 : timing_1 + 1000);
-            local_cap = max(per_1 - mean(per_1(1:40)));
-        end
-    end
     
     num_class2 = length(subj_events);
     class2_onsets = []; attempts = 0;
@@ -627,7 +646,7 @@ function [X_eeg, X_imu, X_heur, Y, local_cap] = extract_subject_features(subj, r
         
         if end_idx <= length(eeg_sig_filtered)
             epoch = eeg_sig_filtered(start_idx:end_idx);
-            epoch_bn = (epoch - mean(epoch(1:40))) ./ local_cap;
+            epoch_bn = (epoch - mean(epoch(1:40))) ./ global_cap;
             feat = extract_features(epoch_bn, sys_order);
             
             acc_epoch = acc_sig(:, start_idx:end_idx);
@@ -807,4 +826,38 @@ function [TP, FP, FN, tot] = continuous_evaluate_subject(subj, raw_data_dir, b, 
     
     TP = sum(matched_falls);
     FN = length(real_falls) - TP;
+end
+
+function local_cap = calculate_subject_cap(subj, raw_data_dir, b, a)
+    local_cap = 1.0;
+    
+    load(fullfile(raw_data_dir, 'All34_table.mat'), 'event_table');
+    filtered_dir = fullfile(raw_data_dir, 'Filtered');
+    my_edfs_dir = dir(fullfile(filtered_dir, '*edf'));
+    edfs_names = {my_edfs_dir.name};
+    
+    if subj < 10, edf_idx = find(contains(edfs_names, ['0', num2str(subj)]));
+    else, edf_idx = find(contains(edfs_names, num2str(subj))); end
+    if isempty(edf_idx), return; end
+    
+    edf_name = fullfile(filtered_dir, edfs_names{edf_idx(1)});
+    table_idx = find(event_table.Subject == subj);
+    subj_events = event_table{table_idx, 3:end};
+    subj_events = subj_events(~isnan(subj_events));
+    
+    try
+        EEG_whole = edfread(edf_name, 'SelectedSignals', 'R6', 'DataRecordOutputType', 'vector');
+        eeg_sig = cat(1, EEG_whole.(1){:})';
+    catch
+        return;
+    end
+    
+    eeg_sig_filtered = filtfilt(b, a, eeg_sig);
+    if ~isempty(subj_events)
+        timing_1 = subj_events(1);
+        if timing_1 + 1000 <= length(eeg_sig_filtered)
+            per_1 = eeg_sig_filtered(timing_1 + 1 : timing_1 + 1000);
+            local_cap = max(per_1 - mean(per_1(1:40)));
+        end
+    end
 end
