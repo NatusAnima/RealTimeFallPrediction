@@ -182,7 +182,7 @@ while isvalid(fig)
         if ~isempty(pred_future) && strcmp(pred_future.State, 'finished')
             try
                 p_fall = fetchOutputs(pred_future);
-                if p_fall >= 0.20
+                if p_fall >= 0.50
                     status_lbl.Text = sprintf('STATUS: FALL DETECTED! (%.2f)', p_fall);
                     status_lbl.FontColor = [0.8, 0.1, 0.1];
                     ms_since_last_detection = 0; % Activate Blindfold

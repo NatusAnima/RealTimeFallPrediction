@@ -256,11 +256,11 @@ function execute_training(fig)
             test_idx = ismember(all_subj_idx, find(test_subjs_mask));
             train_idx = ismember(all_subj_idx, find(train_subjs_mask));
             
-            template_eeg = templateTree('MaxNumSplits', sum(train_idx) - 1);
-            mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
+            template_eeg = templateTree('MinLeafSize', 5);
+            mdl_eeg_fold = fitcensemble(X_eeg(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
             
-            template_imu = templateTree('MaxNumSplits', sum(train_idx) - 1);
-            mdl_imu_fold = fitcensemble(X_imu(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
+            template_imu = templateTree('MinLeafSize', 5);
+            mdl_imu_fold = fitcensemble(X_imu(train_idx, :), Y_train(train_idx), 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(train_idx));
             
             [~, score_eeg] = predict(mdl_eeg_fold, X_eeg(test_idx, :));
             [~, score_imu] = predict(mdl_imu_fold, X_imu(test_idx, :));
@@ -273,11 +273,11 @@ function execute_training(fig)
         end
     end
     
-    template_eeg = templateTree('MaxNumSplits', size(X_eeg, 1) - 1);
-    mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
+    template_eeg = templateTree('MinLeafSize', 5);
+    mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
     
-    template_imu = templateTree('MaxNumSplits', size(X_imu, 1) - 1);
-    mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
+    template_imu = templateTree('MinLeafSize', 5);
+    mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
     
     X_fusion_train = [p_eeg_oof, p_imu_oof, X_heur];
     Y_train_cat = categorical(Y_train);
@@ -386,11 +386,11 @@ function execute_loso(fig)
                 t_idx = ismember(all_subj_idx, find(train_subjs_mask));
                 ts_idx = ismember(all_subj_idx, find(test_subjs_mask));
                 
-                template_eeg = templateTree('MaxNumSplits', sum(t_idx) - 1);
-                mdl_eeg_fold = fitcensemble(X_eeg(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(t_idx));
+                template_eeg = templateTree('MinLeafSize', 5);
+                mdl_eeg_fold = fitcensemble(X_eeg(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(t_idx));
                 
-                template_imu = templateTree('MaxNumSplits', sum(t_idx) - 1);
-                mdl_imu_fold = fitcensemble(X_imu(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(t_idx));
+                template_imu = templateTree('MinLeafSize', 5);
+                mdl_imu_fold = fitcensemble(X_imu(t_idx, :), Y_train(t_idx), 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights(t_idx));
                 
                 [~, score_eeg] = predict(mdl_eeg_fold, X_eeg(ts_idx, :));
                 [~, score_imu] = predict(mdl_imu_fold, X_imu(ts_idx, :));
@@ -403,11 +403,11 @@ function execute_loso(fig)
             end
         end
         
-        template_eeg = templateTree('MaxNumSplits', size(X_eeg, 1) - 1);
-        mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
+        template_eeg = templateTree('MinLeafSize', 5);
+        mdl_eeg = fitcensemble(X_eeg, Y_train, 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_eeg, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
         
-        template_imu = templateTree('MaxNumSplits', size(X_imu, 1) - 1);
-        mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 30, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
+        template_imu = templateTree('MinLeafSize', 5);
+        mdl_imu = fitcensemble(X_imu, Y_train, 'Method', 'Bag', 'NumLearningCycles', 100, 'Learners', template_imu, 'ClassNames', {'0', '1'}, 'Weights', obs_weights);
         
         X_fusion_train = [p_eeg_oof, p_imu_oof, X_heur];
         Y_train_cat = categorical(Y_train);
@@ -554,7 +554,7 @@ function [TP, TN, FP, FN, FP0, FP2, tot, p_falls, true_labels] = evaluate_subjec
                 local_p_fall(e_idx) = p_fall;
                 local_labels(e_idx) = orig_label;
                 
-                 if p_fall >= 0.20
+                 if p_fall >= 0.50
                      pred_label = '1';
                  else
                      pred_label = '0';
@@ -798,7 +798,7 @@ function [TP, FP, FN, tot] = continuous_evaluate_subject(subj, raw_data_dir, b, 
         if ms_since_last_detection >= blindfold_samples
             if heur_score >= 1.2
                 p_fall = predict_fall_wrapper(eeg_norm, acc_window, heur_score, sys_order, mdl_eeg, mdl_imu, mdl_fusion);
-                if p_fall >= 0.20
+                if p_fall >= 0.50
                     detections(end+1) = current_sample + round(window_size/2);
                     ms_since_last_detection = 0;
                 end

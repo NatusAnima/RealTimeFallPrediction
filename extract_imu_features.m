@@ -27,6 +27,15 @@ function imu_features = extract_imu_features(acc_epoch)
     % Peak Jerk
     peak_jerk = max(abs(diff(acc_magnitude)));
     
+    % Signal Magnitude Area (SMA)
+    sma = sum(abs(acc_x) + abs(acc_y) + abs(acc_z)) / N;
+    
+    % Variance of magnitude
+    var_mag = var(acc_magnitude);
+    
+    % Min Amplitude
+    min_amp = min(acc_magnitude);
+    
     % Combine into output
-    imu_features = [max_amp, peak_jerk];
+    imu_features = [max_amp, peak_jerk, sma, var_mag, min_amp];
 end
